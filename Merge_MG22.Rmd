@@ -1,0 +1,81 @@
+---
+title: "Merge MG22"
+author: "Emily Kozik"
+date: "1/6/2021"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+This is a single cell RNA dataset of microglia in postmortem brain tissue. 
+There are 3 samples from 2 donors. 
+- Samples MG_22 were isolated as sorted microglia from Hippocampus (HIPP) and medial frontal gyrus (MFG)
+- Sample 17_016 was isolated as single nuclei from unsorted medial frontal gyrus (MFG). 
+
+We will merge the two fresh microglia samples and keep the nuclei as a separate dataset.
+
+## Setup
+```{r libraries}
+#load libaries
+library(dplyr)
+library(Seurat)
+library(patchwork)
+
+print(paste("Seurat ", packageVersion("Seurat")))
+
+```
+
+Load the fresh microglia samples
+```{r Loading Data}
+load("~/Raj_Lab/Microglia/seurat_object_MG_22_HIPP.Rdata")
+MG22HIPP <- seurat_object_MG_22_HIPP
+rm(seurat_object_MG_22_HIPP)
+
+load("~/Raj_Lab/Microglia/seurat_object_MG_22_MFG.Rdata")
+MG22MFG <- seurat_object_MG_22_MFG
+rm(seurat_object_MG_22_MFG)
+```
+
+## Look at each sample alone
+
+This is the microglia from the hippocampus
+```{r metadata MG22HIPP}
+MG22HIPP
+head(MG22HIPP@meta.data)
+```
+
+This is the microglia from the medial frontal gyrus
+```{r metadata MG22MFG}
+MG22MFG
+head(MG22MFG@meta.data)
+```
+
+## Merge
+```{r Merge MG22}
+print("MG22HIPP")
+MG22HIPP
+print("MG22MFG")
+MG22MFG
+MG22 <- merge(MG22HIPP, y = MG22MFG, add.cell.ids = c("HIPP", "MFG"), project = "MG22_Microglia")
+saveRDS(MG22, file = "MG22_combined.rds")
+print("Combined: MG22")
+MG22
+```
+
+```{r Features and Counts}
+data.frame("median transcripts" = c("MG22HIPP" = median(MG22HIPP@meta.data$nCount_RNA),
+                                    "MG22MFG" = median(MG22MFG@meta.data$nCount_RNA),
+                                    "Combined" = median(MG22@meta.data$nCount_RNA)), 
+            "median genes" = c("MG22HIPP" = median(MG22HIPP@meta.data$nFeature_RNA),
+                               "MG22MFG" = median(MG22MFG@meta.data$nFeature_RNA),
+                               "Combined" = median(MG22@meta.data$nFeature_RNA)))
+```
+
