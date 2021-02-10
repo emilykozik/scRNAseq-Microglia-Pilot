@@ -9,7 +9,7 @@ Main objectives:
 
 ## Data
 We have 3 RData files with Seurat objects which have been processed first in cellranger and filtered by minimumn cells per gene =3 and minimum features per cell = 200. There is also data from Olah et al. 2020 [[paper]](https://www.nature.com/articles/s41467-020-19737-2) [[github]](https://github.com/vilasmenon/Microglia_Olah_et_al_2020) which was [processed]() for comparison of QC. 
-MG22 HIPP and MFG data were [merged](Merge_MG22) into one Seurat object.
+MG22 HIPP and MFG data were [merged](https://emilykozik.github.io/scRNAseq-Microglia-Pilot/Merge_MG22.html) into one Seurat object.
 
 ## Quality Control
 
