@@ -1,6 +1,7 @@
 # Microglia Pilot
-##Background and Objectives
+## Background and Objectives
 The samples for this experiment were collected and processed in-house and includes isolation of fresh microglia from human donor (MG22; 73yo, M, PD) from hippocampus (HIPP) and medial frontal gyrus (MFG) and frozen nuclei collected from human donor (17_016; 72yo, M, control) from MFG. 
+
 Main objectives:
 1. Determine quality of the fresh microglia in comparison to nuclei.
 2. Determine the quantity and quality of microglia that can be identified from frozen nuclei sample.
