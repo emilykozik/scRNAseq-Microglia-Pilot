@@ -1,0 +1,88 @@
+---
+title: "MG22-HIPP randomForest annotation"
+author: "Emily Kozik"
+date: "2/24/2021"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+    theme: lumen
+---
+# Setup
+```{r setup}
+library(Seurat)
+library(dplyr)
+library(utils)
+```
+
+# Load the Data
+This is the output from the randomForest script which was run by Katia on the chimera
+```{r load data}
+mic <- readRDS("MG22HIPP_RF_output1.rds") 
+k_cell <- read.delim2("cluster_by_cell_MG_22_HIPP.txt")
+
+dim(mic)
+dim(k_cell)
+table(k_cell$cluster)
+
+```
+This is the distribution of cells in each cluster as determined by the RF.
+
+# Dimension Reduction
+```{r Dimension Reduction}
+mic <- RunPCA(mic, features = VariableFeatures(object = mic))
+ElbowPlot(mic)
+
+mic <- RunUMAP(mic, dims = 1:7)
+```
+
+# Add clusters from RF
+```{r Clustering from RF}
+#mic@meta.data$cell = rownames(mic@meta.data)
+
+#mic@meta.data <- mic@meta.data %>% left_join(k_cell, by = "cell")
+#mic@meta.data$cluster <- as.character(mic@meta.data$cluster)
+#rownames(mic@meta.data) <- mic@meta.data$cell
+
+#add cluster ids from RF
+#confirm that the cells are in the same order
+
+head(k_cell[,1])
+head(mic@assays$RNA@counts[1,])
+tail(k_cell[,1])
+tail(mic@assays$RNA@counts[1,])
+
+#add cluster number to metadata
+mic$cluster <- k_cell[,2]
+mic <- SetIdent(mic, value = mic$cluster)
+
+DimPlot(mic, reduction = "umap", group.by = "cluster")
+```
+# Differential Expression
+
+```{r DE}
+mic.markers <- FindAllMarkers(mic, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10markers <- mic.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+top10markers_table <-data.frame("Cluster0" = top10markers[1:10,7], 
+                                "Cluster1" = top10markers[11:20,7],
+                                "Cluster2" = top10markers[21:30,7])
+
+top10markers_table
+```
+
+```{r heatmap}
+DoHeatmap(mic, features = top10markers$gene) + NoLegend()
+```
+
+# Annotation
+```{r}
+new.cluster.ids <- c("'exAM'","Monocytes","homeostatic")
+names(new.cluster.ids) <- levels(mic)
+mic <- RenameIdents(mic, new.cluster.ids)
+DimPlot(mic, reduction = "umap", label = TRUE, pt.size = 0.5)
+```
+
+
+
+

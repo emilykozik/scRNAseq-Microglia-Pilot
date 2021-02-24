@@ -1,0 +1,590 @@
+---
+title: "Microglia single cell"
+author: "Emily Kozik"
+date: "01/23/21"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+    theme: lumen
+---
+
+
+Questions to address from Lot
+10X: How many MG (microglia) nuclei did we find in the total nuclei (% of total)?
+
+10X: How do these MG nuclei compare to the fresh microglia in terms of QC (number of transcripts per cell; number of genes per cell) and gene expression (we could look at the Patir core genes first?)
+
+10X us versus 10X others: How do our QC metrics related to reported QC metrics of others?
+
+# Setup
+```{r setup, include=TRUE}
+
+
+#load libaries
+library(dplyr)
+library(Seurat)
+library(patchwork)
+reticulate::py_install(packages ='umap-learn')
+
+library(plotly)
+library(future)
+
+print(paste("Seurat ", packageVersion("Seurat")))
+```
+
+ 
+ 
+```{r Helper function}
+#Helper function from Brian
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+# Need to wrap inside tagList when rendering DTs within a for loop
+createDT_html <- function(DF, caption="", scrollY=400){
+  print( htmltools::tagList( createDT(DF, caption, scrollY)) ) 
+}
+```
+ 
+ 
+ 
+```{r load data}
+#setwd("/sc/arion/projects/ad-omics/emily/Microglia/fresh")
+#setwd("/sc/arion/projects/ad-omics/emily/Microglia")
+setwd("~/Raj_Lab/Microglia")
+#MG22 <- readRDS("~/hpc/users/kozike01/test/MG22_combined_filtered.rds")
+MG22 <- readRDS("MG22_combined_filtered.rds")
+NUC <- readRDS("NUC_filtered.rds")
+```
+
+# Pre-processing 
+## Normalizing the Data
+
+Next we use a global-scaling normalization method "LogNormalize" that normalizes the feature expression measurements for each cell by the total expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result. 
+```{r Normalize}
+MG22 <- NormalizeData(MG22, normalization.method = "LogNormalize", scale.factor = 10000)
+NUC <- NormalizeData(NUC, normalization.method = "LogNormalize", scale.factor = 10000)
+
+levels(Idents(MG22))
+levels(Idents(NUC))
+```
+
+
+## Feature Selection
+
+Highly variable features are those transcripts that have high cell-cell variation in the dataset. Identifying the highly variable transcripts makes it easier in downstream analysis to extract biologically significant information. 
+
+```{r Feature Selection, fig.width=12, fig.height = 6}
+MG22 <- FindVariableFeatures(MG22, selection.method = "vst", nfeatures = 2000)
+NUC <- FindVariableFeatures(NUC, selection.method = "vst", nfeatures = 2000)
+
+
+var.genes.MG22 <- Seurat::VariableFeatures(MG22)
+appendedGenes.MG22 <- c(var.genes.MG22, "CD68","CCL6", "LYZ2")
+
+
+var.genes.NUC <- Seurat::VariableFeatures(NUC)
+appendedGenes.NUC <- c(var.genes.NUC , "CD68","CCL6", "LYZ2")
+
+# Identify the 10 most highly variable genes
+top10_MG22 <- head(VariableFeatures(MG22), 10)
+top10_NUC <- head(VariableFeatures(NUC), 10)
+
+
+highly_var_feats <- data.frame(Top10Features = c(1:10),
+                               MG22 = top10_MG22,
+                               NUC = top10_NUC)
+highly_var_feats
+# plot variable features with and without labels
+plot1_MG22 <- VariableFeaturePlot(MG22)
+plot2_MG22<- LabelPoints(plot = plot1_MG22, points = top10_MG22, repel = TRUE)
+plot1_MG22 + plot2_MG22
+
+plot1_NUC<- VariableFeaturePlot(NUC)
+plot2_NUC <- LabelPoints(plot = plot1_NUC, points = top10_NUC, repel = TRUE)
+plot1_NUC + plot2_NUC
+
+```
+# Dimension Reduction
+## Scaling the data
+
+Standard pre-processing for dimensional reduction. The ScaleData function:
+
+- Shifts the expression of each gene, so that the mean expression across cells is 0
+- Scales the expression of each gene, so that the variance across cells is 1
+- This step gives equal weight in downstream analyses, so that highly-expressed genes do not dominate
+    The results of this are stored in pbmc[["RNA"]]@scale.data
+
+
+```{r Scaling}
+#use if making heatmaps
+all.genes_MG22 <- rownames(MG22) 
+MG22 <- ScaleData(MG22, 
+                      features = all.genes_MG22,
+                      vars.to.regress = c("percent.mt","nCount_RNA"))
+
+
+all.genes_NUC <- rownames(NUC)
+NUC <- ScaleData(NUC,features = all.genes_NUC,
+                     vars.to.regress = c("percent.mt","nCount_RNA"))
+
+
+#MG22 <- saveRDS("MG22_scaled.rds")
+#NUC <- saveRDS("NUC_scaled.rds")
+```
+
+## PCA
+
+```{r PCA}
+MG22 <- RunPCA(MG22, features = VariableFeatures(object = MG22))
+NUC <- RunPCA(NUC, features = VariableFeatures(object = NUC))
+```
+
+```{r Vizualize PCs}
+DimPlot(MG22, reduction = "pca")
+DimPlot(NUC, reduction = "pca")
+```
+
+```{r PCA Heatmaps, fig.width=10, fig.height=16 }
+DimHeatmap(MG22, dims = 1:15, cells = 500, balanced = TRUE)
+DimHeatmap(NUC, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
+```{r JackStraw}
+MG22 <- JackStraw(MG22, num.replicate = 100, dims=20)
+MG22 <- ScoreJackStraw(MG22, dims = 1:20)
+
+NUC <- JackStraw(NUC, num.replicate = 100, dims = 20)
+NUC <- ScoreJackStraw(NUC, dims = 1:20)
+```
+
+```{r Jack Straw Plots}
+JackStrawPlot(MG22, dims = 1:20)
+JackStrawPlot(NUC, dims = 1:20)
+```
+
+```{r Elbow Plots}
+ElbowPlot(MG22)
+ElbowPlot(NUC)
+```
+Based on Elbow plots, we lose most variation after PC 11 or 12. 
+ 
+MG22HIPP use PCs 1 through 13
+MG22 MFG use PCs 1 through 13
+17_016 MFG use PCs 1 through 18
+
+# Clustering
+## MG_22
+### Cluster
+```{r clustering MG22, echo=FALSE}
+MG22 <- FindNeighbors(MG22, dims = 1:13)
+MG22 <- FindClusters(MG22, resolution = 0.1) #play with resolution
+MG22 <- RunUMAP(MG22, dims = 1:13)
+DimPlot(MG22 , reduction = "umap")
+DimPlot(MG22 , reduction = "umap", group.by = "orig.ident")
+```
+
+```{r MG22 tsne}
+MG22 <- RunTSNE(object=MG22,  reduction.use = "pca", 
+               dims.use = 1:13, 
+               do.fast = T)
+DimPlot(MG22 , reduction = "tsne")
+DimPlot(MG22 , reduction = "tsne", group.by = "orig.ident")
+```
+
+Save RDS file
+```{r save MG22}
+saveRDS(MG22, file="MG22_final.RDS")
+```
+
+### Differential Expression with FindAllMarkers
+
+https://satijalab.org/seurat/archive/v3.2/de_vignette.html 
+This vignette describes the different test that can be used and the ways to use differential expression in seurat
+```{r Find All Markers MG22}
+##MG22H <-readRDS("output/MG22_seurat_final.rds")
+MG22.markers <- FindAllMarkers(MG22, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10markers <- MG22.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+top10markers_table <-data.frame("Cluster0" = top10markers[1:10,7], 
+                                "Cluster1" = top10markers[11:20,7],
+                                "Cluster2" = top10markers[21:30,7], 
+                                "Cluster3" = top10markers[31:40,7],
+                                "Cluster4" = top10markers[41:50,7], 
+                                "Cluster5" = top10markers[51:60,7],
+                                "Cluster6" = top10markers[61:70,7], 
+                                "Cluster7" = top10markers[71:80,7],
+                                "Cluster8" = top10markers[81:90,7])
+
+top10markers_table
+```
+
+```{r heatmap of markers MG22HIPP, fig.height= 8}
+top10.MG22 <- MG22.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(MG22, features = top10.MG22$gene) + NoLegend()
+DotPlot(MG22, features = c("CX3CR1", "P2RY12", "SOCS6", "TUBB48", "RGS1", "HSPB1", "CXCR4", "JUN", "FOSB", "CCL3", "PPP1R15A", "S100P", "FCGR3B","S100A12", "S100A9", "IFITM2", "RNASE1", "MARCO", "F13A1", "CD163", "CCL5", "NKG7", "KLRD1", "IL32", "IFITM1", "DUSP2", "VCAN", "EREG", "FCN1", "THBS1", "CD52", "CD44")) + RotatedAxis()
+top5.MG22 <- MG22.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+DotPlot(MG22, features = top5.MG22$gene) + RotatedAxis()
+```
+
+### Gene enrichment with gprofiler
+Although a useful tool, in this case gprofiler was not very useful because there is not as much literature defining the different subtypes of microglia. Most hits come up as realting to immune function. 
+```{r gene enrichment MG22, echo=FALSE}
+
+# top1 <- Seurat::
+for (clust in unique(top10.MG22$cluster)){ 
+  subClust <- subset(top10.MG22, cluster==clust) 
+  cat('  \n#### Cluster',clust,'  \n')
+  print(paste("Biomarker:",subClust$gene)) 
+  # try({
+    query <- subset(subClust, p_val_adj<0.05)$gene %>% as.character()
+    gostres <- gprofiler2::gost(query = query, organism = "hsapiens", significant = F)
+    gprofiler2::gostplot(gostres)
+    sig.results <- gostres$result %>% 
+      dplyr::mutate(q_value =  p.adjust(p = gostres$result$p_value, method = "bonferroni")) %>%
+      subset(q_value<0.05) 
+    if(nrow(sig.results)>0){
+        createDT_html(sig.results)
+    } else {print("No significant GO terms at Bonferonni-corrected p-value < 0.05.")}
+  # }) 
+  # print(results) #parse_html_notebook(results)
+  cat('  \n')
+}
+
+```
+
+
+
+```{r distinguish clusters 2 and 3}
+FindMarkers(MG22, ident.1 = "3", ident.2 = "2")
+DotPlot(MG22, feature = c("CD14", "MARCO", "F13A1", "RNASE1", "FCN1", "LYZ", "S100A9", "S100A8"))+ RotatedAxis()
+FeaturePlot(MG22, feature = c("CD14", "MARCO", "F13A1", "RNASE1", "FCN1", "LYZ", "S100A9", "S100A8")) 
+```
+
+
+### Annotation
+
+I did literature mining of these different clusters markers and these were the best defining features that I could identify. 
+exAM refers to ex vivo activated microglia which matched closely with the signature described in Daniele Mattei's paper looking at the effects of enzymatic digestions of brain cells (https://www.mdpi.com/1422-0067/21/21/7944) and the preprint out of Beth Stevens lab (https://www.biorxiv.org/content/10.1101/2020.12.03.408542v1). It could be just activated microglia before post mortem processing as well. But the high Fos and Jun expression in this cluster are notable. 
+
+```{r naming clusters }
+
+new.cluster.ids <- c("homeostatic", "'exAM'", "CD14- Mono", "CD14+ Monocytes", "T")
+names(new.cluster.ids) <- levels(MG22)
+MG22 <- RenameIdents(MG22, new.cluster.ids)
+DimPlot(MG22, reduction = "umap", label = TRUE, pt.size = 0.5)
+```
+
+The number of cells in each cluster 
+```{r prop table idents}
+table(Idents(MG22))
+prop.table(table(Idents(MG22)))
+```
+
+Look at just the microglia clusters (without typical monocyte markers)
+```{r}
+MG22.microglia <- subset(x = MG22, idents = c("homeostatic", "'exAM'"))
+
+head(MG22.microglia$nCount_RNA)
+median(MG22.microglia$nCount_RNA)
+hist(MG22.microglia$nCount_RNA)
+```
+
+### Feature Plots
+
+Markers of interest to look at:
+```{r known markers}
+#General myeloid cell makers
+myeloid_markers <- c("CD14", "AIF1")
+
+#General microglial markers
+mic_gen_markers <- c("P2RY12","C1QA" ,"C1QB", "C1QC", "GPR34")
+
+#clusters based on Olah et al. 
+mic1 <- c("EBI3", "CTSC", "PLTP", "CTSB", "TMEM176A", "MS4A6A", "VSIG4", "TREM2","MS4A4A", "TMEM176B")
+mic2 <- c("BLNK","MEF2C", "CD81", "TLN2", "MAF", "SORL1", "ADGRG1", "PILRA")
+mic3 <- c("FOS", "DUSP", "HSPB2", "DDIT4", "HSPA1A","HSPA1B", "JUN", "HSPE1", "RGS1")
+mic4 <- c("MX1", "IFIT3", "BST2", "PARP9", "IFIT1", "IFITM3","ISG15","GMFB", "IRF7")
+mic5 <- c("KDM6B", "LPL","NFKBID","CD83","ARID5A","TRIB1","C3AR1","ID2","MRC1","CCL2","CCL3","CCL4")
+mic6 <- c("PLCG2","AP1B1","PLD4","SELPLG","SERPINE1","SRGAP2","TFRC")
+mic7 <- c("PLAT","HLA−DMB","HTRA1","HLA−DMA","ITM2B","LIPA","CD68","HLA−DRB1","CD74")
+mic8 <- c("PRDX1","GPX4","AIF1","BIN1","APOC1","FTL")
+mic9 <- c("PCNA", "ORC6", "FEN1", "RFX2","MCM5","HMGB1","FAM111A","TK1","MKI67","UBE2C")
+
+#other myeloid cells
+mono <- c("FCN2", "VCAN", "LYZ")
+Tcell <- c("CD3E","GZMB", "IL7R", "FGFBP2")
+Bcell <- c("CCR7", "CD79A")
+GFAPmyel <- c("AIF1","C1QA", "GFAP", "MBP", "SNAP25")
+eryth <- c("HBA1")
+
+#from katia 
+homeostatic = c("CST3", "HEXB", "CTSD", "P2RY12", "C1QA", "C1QB", "CTSS", "CSF1R", "CX3CR1")
+DAM_01 = c("APOE", "TYROBP", "CTSB", "LYZ2", "B2M", "FTH1")
+DAM_02 = c("TREM2", "AXL", "CST7", "CTSL", "LPL", "CD9", "CSF1", "CCL6", "ITGAX", "CLEC7A", "LILRB4", "TIMP2")
+
+#Patir core genes
+patir.genes <- c("CX3CR1", "AIF1", "SCF1R", "TLR1", "C3AR1", "C1QA", "TREM2", "TYROBP", "CAPG", "WA5", "GPR34", "P2RY12", "P2RY13", "TMEM119")
+
+```
+
+
+
+Now we look at how the Olah microglial cluster defining markers distribute on our clusters. 
+Olah mic1 are markers for Housekeeping cells for CNS parenchyma and the most abundant cell type in the Olah clusters
+```{r}
+#compare to olah markers 
+DotPlot(MG22, features = mic1)
+FeaturePlot(MG22, features = mic1)
+```
+Olah mic2 markers are also housekeeping cell of the parenchyma. These markers are highly expressed in our clusters 0 thorugh 4 (MEF2C, CD81, MAF, SORL1)
+```{r}
+DotPlot(MG22, features = mic2)
+FeaturePlot(MG22, features = mic2)
+```
+
+Olah mic3 markers indicate distressed microglia cells. They mention that these are more of these cells in autopsy samples and less in surgery samples.
+```{r}
+DotPlot(MG22, features = mic3)
+FeaturePlot(MG22, features = mic3)
+```
+
+Olah mic4 markers are enriched in interferon response genes 
+```{r}
+DotPlot(MG22, features = mic4)
+```
+
+Olah mic 5 markers are labeled as "anti inflammatory response"
+```{r}
+DotPlot(MG22, features = mic5)
+FeaturePlot(MG22, features = mic5)
+```
+
+Olah mic 6 markers are also labeled as "anti-inflammatory response" 
+```{r}
+DotPlot(MG22, features = mic6)
+```
+
+Olah mic 7 markers are implicated perhaps in antigen presentaion.
+```{r}
+DotPlot(MG22, features = mic7)
+```
+
+Olah mic 8 have upregulation of transcription factors but weren't given a category title per se.
+```{r}
+DotPlot(MG22, features = mic8)
+```
+
+Olah mic 9 for proliferating microglia
+```{r}
+DotPlot(MG22, features = mic9)
+```
+
+Olah clusters 10 - 14 are monocytes, T cell, B cells, GFAP+ myeloid cells, erythrocytes.
+```{r}
+DotPlot(MG22, features = mono)
+DotPlot(MG22, features = Tcell )
+DotPlot(MG22, features = Bcell )
+DotPlot(MG22, features = GFAPmyel)
+DotPlot(MG22, features = eryth)
+```
+
+
+Look also at canonical homeostatic and DAM markers 
+
+```{r}
+DotPlot(MG22, features = homeostatic)
+FeaturePlot(MG22,features = homeostatic)
+DotPlot(MG22, features = DAM_01)
+FeaturePlot(MG22,features = DAM_01)
+DotPlot(MG22, features = DAM_02)
+FeaturePlot(MG22,features = DAM_02)
+```
+
+
+Look also at Patir core genes (https://doi.org/10.1002/glia.23572)
+```{r}
+DotPlot(MG22, features = patir.genes)
+FeaturePlot(MG22,features = patir.genes)
+```
+
+
+## Nuclei
+### Cluster
+```{r clustering nuc umap}
+NUC <- FindNeighbors(NUC, dims = 1:18)
+NUC <- FindClusters(NUC, resolution = 0.5)
+NUC <- RunUMAP(NUC, dims = 1:18)
+DimPlot(NUC, reduction = "umap")
+```
+
+```{r tsne Nuc}
+NUC <- RunTSNE(object=NUC,  reduction.use = "pca", 
+               dims.use = 1:18, 
+               do.fast = T,
+               tsne.method = "Rtsne", 
+               seed.use = 2019,
+               verbose=F) 
+DimPlot(NUC, reduction = "tsne")
+```
+
+
+```{r UMAP save NUC}
+saveRDS(NUC, file="NUC_final.RDS")
+```
+
+### Differential Expression with FindAllMarkers
+
+```{r Find all markers NUC }
+NUC.markers <- FindAllMarkers(NUC, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10markers <- NUC.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+top10markers_table <-data.frame(Cluster0 = top10markers[1:10,7], 
+                                Cluster1 = top10markers[11:20,7],
+                                Cluster2 = top10markers[21:30,7], 
+                                Cluster3 = top10markers[31:40,7],
+                                Cluster4 = top10markers[41:50,7], 
+                                Cluster5 = top10markers[51:60,7],
+                                Cluster6 = top10markers[61:70,7], 
+                                Cluster7 = top10markers[71:80,7],
+                                Cluster8 = top10markers[81:90,7],
+                                Cluster9 = top10markers[91:100,7],
+                                Cluster10 = top10markers[101:110,7],
+                                Cluster11 = top10markers[111:120,7],
+                                Cluster12 = top10markers[121:130,7],
+                                Cluster13 = top10markers[131:140,7],
+                                Cluster14 = top10markers[141:150,7]
+                                )
+
+top10markers_table
+```
+
+
+```{r heatmap of markers NUC, fig.height= 12}
+top10.NUC <- NUC.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(NUC, features = top10.NUC$gene) + NoLegend() 
+```
+
+### Gene Enrichment with grofiler
+
+```{r gene enrichment NUC, echo=FALSE}
+#brians code
+# top1 <- Seurat::
+for (clust in unique(top10.NUC$cluster)){ 
+  subClust <- subset(top10.NUC, cluster==clust) 
+  cat('  \n#### Cluster',clust,'  \n')
+  print(paste("Biomarker:",subClust$gene)) 
+  # try({
+    query <- subset(subClust, p_val_adj<0.05)$gene %>% as.character()
+    gostres <- gprofiler2::gost(query = query, organism = "hsapiens", significant = F)
+    gprofiler2::gostplot(gostres)
+    sig.results <- gostres$result %>% 
+      dplyr::mutate(q_value =  p.adjust(p = gostres$result$p_value, method = "bonferroni")) %>%
+      subset(q_value<0.05) 
+    if(nrow(sig.results)>0){
+        createDT_html(sig.results)
+    } else {print("No significant GO terms at p-value < 0.05.")}
+  # }) 
+  # results <- Seurat::FindGeneTerms(QueryGene = subClust$gene) # defunct in SeuratV3
+  # print(results) #parse_html_notebook(results)
+  cat('  \n')
+}
+
+```
+
+
+
+
+### Feature Plots
+
+Markers based on McKenzie et al 2018 - combined expression across multiple scRNA seq datasets in human and murine. also looked at pubmed searches and markers commonly used in the literature. 
+nuclei markers
+https://www.nature.com/articles/s41598-018-27293-5#MOESM3
+
+```{r known markers for cell types NUC}
+
+ast <- c("GFAP", "AQP4", "SLC1A2", "GJA1", "GJB6", "SLC4A4", "SLC39A12")
+end <- c("APOLD1","FTL1","ABCB1", "RGS5", "PTPRB", "CD34", "VWF", "PALMD")
+micro <- c("ITGAM", "CS3CR1", "CCL3", "CCL4", "CSF1R"," P2RY12", "C1QB", "PLEK", "GP183")
+neuron <- c("VIP", "RELN", "GAD2", "SYNPR", "SCG2", "CNR1", "NPY")
+oli <- c("MBP", "MOG", "MAG", "CNP", "PLP1", "MOBP", "CLDN22", "OPALIN", "UGT8", "ERMN", "BCAS1")
+opc <- c("OLIG2", "OLIG1", "Sox10", "GPR17", "PDGFR", "VCAN", "SHC", "PCDH15", "TNR")
+
+DoHeatmap(NUC, features = c(ast, end, micro, neuron, oli, opc))
+DoHeatmap(NUC, features = c(homeostatic, DAM_01, DAM_02))
+
+
+```
+
+
+Neurons
+```{r}
+#From Blue Lake 2016
+
+Exc <- c( "SLC17A7", "SATB2")
+In <- c("GAD1", "GAD2", "SLC32A1", "SLC6A1")
+```
+
+```{r}
+FeaturePlot(NUC, features = Exc)
+FeaturePlot(NUC, features = In)
+```
+```{r}
+DotPlot(NUC, features = c(Exc, "RBFOX3"))
+DotPlot(NUC, features = In)
+```
+
+
+These are the homeostatic microglial markers. 
+```{r fig.height=9, fig.width=8}
+DotPlot(NUC, features =patir.genes ) + RotatedAxis()
+DotPlot(MG22, features =patir.genes ) + RotatedAxis()
+```
+
+### Annotation
+
+```{r}
+
+new.cluster.ids <- c("Ex1","Ex2", "Oligo","In1","In2", "Ex3", "Ex4","Astro", "Ex5", "OPCs", "Ex6", "In3", "MG", "Ex7", "Endo")
+names(new.cluster.ids) <- levels(NUC)
+NUC <- RenameIdents(NUC, new.cluster.ids)
+DimPlot(NUC, reduction = "umap", label = TRUE, pt.size = 0.5)
+```
+
+```{r}
+table(Idents(NUC))
+prop.table(table(Idents(NUC)))
+```
+
+Compare distribution of genes and transcripts of microglial cluster in the nuclei sample and microglia in the fresh microglia samples.
+
+```{r}
+NUC.microglia <- subset(x = NUC, idents = c("MG"))
+
+head(NUC.microglia$nCount_RNA)
+median(NUC.microglia$nCount_RNA)
+hist(NUC.microglia$nCount_RNA)
+
+
+head(NUC.microglia$nFeature_RNA)
+median(NUC.microglia$nFeature_RNA)
+hist(NUC.microglia$nFeature_RNA)
+
+
+head(MG22.microglia$nFeature_RNA)
+median(MG22.microglia$nFeature_RNA)
+hist(MG22.microglia$nFeature_RNA)
+
+
+```
+
+It appears that fresh microglia are able to pick up better resolution and more microglial cells that are able to subcluster. The micorglia from the nuclei isolation are limited and the isolation seems to bias for neurons and maybe oligos. 
+
+

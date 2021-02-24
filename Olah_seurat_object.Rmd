@@ -1,0 +1,55 @@
+---
+title: "Processing Olah Data to Seurat Object"
+author: "Emily Kozik"
+date: "2/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+```{r load libraries}
+library(Seurat)
+library(readr)
+library("Matrix")
+```
+
+
+## Load data and convert to Seurat Object
+```{r}
+#setwd("/sc/arion/projects/ad-omics/emily/Olah")
+alldat <-read_csv("Olah_SupplementaryData14.csv")
+suppdata <- alldat
+colnames(suppdata)[1] <-  NA
+```
+```{r}
+head(suppdata)
+```
+```{r}
+## next we need to convert to a df because tibble doesn't support rownames
+suppdata.df<- as.data.frame(suppdata)
+rownames(suppdata.df) <- suppdata.df[, 1]
+suppdata.df <- suppdata.df[, -1]
+suppdata.df[1:10,1:10]
+```
+
+```{r}
+Olah <- CreateSeuratObject(suppdata.df, assay = "RNA", )
+Olah$new.ident <- "Olah_prefilter"
+Idents(object = Olah) <- Olah$new.ident
+saveRDS(Olah, "Olah_Seurat.RDS") ##this is the seurat object 
+```
+
+```{r}
+Olah
+Olah@meta.data[1:10,]
+```
+
+
+
+
+
+
+

@@ -8,27 +8,18 @@ Main objectives:
 3. Determine whether we can identify the same subclusters from these microglia. 
 
 ## Data
-We have 3 RData files with Seurat objects which have been processed first in cellranger and filtered by minimumn cells per gene =3 and minimum features per cell = 200. There is also data from Olah et al. 2020 [[paper]](https://www.nature.com/articles/s41467-020-19737-2) [[github]](https://github.com/vilasmenon/Microglia_Olah_et_al_2020) which was [processed]() for comparison of QC. 
+We have 3 RData files with Seurat objects which have been processed first in cellranger and filtered by minimumn cells per gene =3 and minimum features per cell = 200. There is also data from Olah et al. 2020 [[paper]](https://www.nature.com/articles/s41467-020-19737-2) [[github]](https://github.com/vilasmenon/Microglia_Olah_et_al_2020) which was [processed](https://emilykozik.github.io/scRNAseq-Microglia-Pilot/Olah_seurat_object.html) for comparison of QC. 
 MG22 HIPP and MFG data were [merged](https://emilykozik.github.io/scRNAseq-Microglia-Pilot/Merge_MG22.html) into one Seurat object.
 
-## Quality Control
+## [Quality Control](https://emilykozik.github.io/scRNAseq-Microglia-Pilot/QC_2.html)
+Compared between Olah, and our MG22 and Nuclei samples then filtered
 
-
-## Suerat Pipeline for Processing
-
-
-## Seurat SCTransform
+## [Seurat Pipeline for Clustering and Annotation](https://emilykozik.github.io/scRNAseq-Microglia-Pilot/Seurat_Clustering.html)
 
 
 ## Clustering with Random Forest algorithm
+We first ran a pilot for the Random Forest script using MG22 Hippocampus sample. "RandomForest_Trial_7.Rmd" -- needs to be run on the chimera
 
-
-## Clustering and Annotation
-
-
-## Nuclei vs Microglia
-
-
-## Comparing to Olah et al. 2020
+[Annotation and plots](https://emilykozik.github.io/scRNAseq-Microglia-Pilot/RandomForest_Annotation.html)
 
 

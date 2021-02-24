@@ -1,0 +1,449 @@
+---
+title: "Random Forest Trial"
+author: "Emily Kozik"
+date: "12/14/2020"
+output: html_document
+---
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+We will use the random forest classifier method described by Olah et al. to check robustness of clustering after permutation of different values for PCs to include and resolution of clustering. 
+
+```{r load packages}
+#load libraries
+library(readr)
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(umap)
+library(reticulate)
+#reticulate::py_install(packages ='umap-learn')
+print(paste("Seurat ", packageVersion("Seurat")))
+library(randomForest)
+library(Matrix)
+library(edgeR)
+library(foreach)
+library(doMC) 
+
+```
+
+```{r pre-processing}
+###load data
+# load("seurat_object_MG_22_HIPP.Rdata")
+load("/sc/arion/projects/ad-omics/sc_mic_rawdata/cellranger_files/run_count_MG-22-HIPP/outs/filtered_feature_bc_matrix/seurat_object_MG_22_HIPP.Rdata")
+prefiltMG22HIPP <- seurat_object_MG_22_HIPP
+
+##filter
+prefiltMG22HIPP[["percent.mt"]] <- PercentageFeatureSet(prefiltMG22HIPP, pattern = "^MT-")
+
+MG22HIPP <- subset(prefiltMG22HIPP, subset = nCount_RNA > 200 & nCount_RNA < 2500 & percent.mt < 10)
+##run
+MG22HIPP <- NormalizeData(MG22HIPP, normalization.method = "LogNormalize", scale.factor = 10000)
+MG22HIPP <- FindVariableFeatures(MG22HIPP, selection.method = "vst", nfeatures = 2000)
+all.genes_MG22HIPP <- rownames(MG22HIPP) 
+MG22HIPP <- ScaleData(MG22HIPP, 
+                      features = all.genes_MG22HIPP,
+                      vars.to.regress = c("percent.mt","nCount_RNA"))
+MG22HIPP <- RunPCA(MG22HIPP, features = VariableFeatures(object = MG22HIPP))
+
+saveRDS(MG22HIPP, file = "MG22HIPP_RF_output1.rds")
+```
+
+# Step 1: Load data
+```{r load data}
+#load data to this point
+setwd("~/pd-omics/katia/scripts/Scripts_Emily/")
+# setwd("~/Documents/Documents/Sinai/Rotations/Raj Lab/single_cell_analysis_1/randomForest")
+MG22HIPP <- readRDS("MG22HIPP_RF_output1.rds")
+
+batchval = MG22HIPP@meta.data$orig.ident
+```
+
+# Functions
+```{r Olah Functions}
+# https://github.com/vilasmenon/Microglia_Olah_et_al_2020/blob/master/code_for_submission_functions.R 
+##functions
+#new version I adapted for seurat3 
+##input data has already been filtered normalized, feature selection, scaled and ran PCA 
+
+# Create groups of clusters with different parameters of resolution, pca ... 
+# krange is not used anymore
+cluster_over_parameters_2=function(dat,batchval,keepcols,pcrange=5:20,resrange=seq(from=0.2,to=0.8,by=0.2),krange=c(5),batchreg=1) {
+  fullclusterings=list()
+  if (length(keepcols)>5) {
+    datobj_0 <- dat
+    comboval="0"
+    maxcls=1
+    maxpcs=0
+    maxident=rep("0",length(keepcols))
+    for (num_pcs in pcrange) {
+      for (resval in resrange) {
+        for (k.param in krange) {
+          datobj_0 <- FindNeighbors(datobj_0, dims=1:num_pcs)
+          datobj_0 <- FindClusters(datobj_0, algorithm=1, verbose = F, resolution = resval)
+          clustids=datobj_0@active.ident
+          print(paste("running parameter combination ", "PCs:", num_pcs,"Resolution:",resval,"K parameter:", k.param,"Clusters:",length(unique(clustids)),sep=" "))
+          if (length(unique(clustids))>1) {
+            outnam=paste(clustids,collapse=",")
+            if (outnam %in% names(fullclusterings)) {
+              fullclusterings[[outnam]]=c(fullclusterings[[outnam]],paste(num_pcs,resval,k.param))
+            } else {
+              fullclusterings[[outnam]]=paste(num_pcs,resval,k.param)
+            }
+          }
+        }
+      }
+    }
+  }
+  return(fullclusterings)
+}
+
+registerDoMC(cores = 20)
+
+####function to assess cluster robustness - returns a matrix of minimum prediction values for each cluster over all pairs of clusters###
+# This will create a matrix showing the pairwise comparision of each cluster
+cluster_robustness=function(distweights,clids,num_iterations=20) {
+  allcl=unique(clids) # cluster ids
+  allcl=allcl[order(allcl)]
+  clmat=matrix(1,nrow=length(allcl),ncol=length(allcl))
+  rownames(clmat)=allcl
+  colnames(clmat)=allcl
+  for (cl1 in 1:(length(allcl)-1)) {
+    clinds1=which(clids==allcl[cl1])
+    samp1=round(length(clinds1)*0.5) # Get a subset of half cells for each cluster
+    for (cl2 in (cl1+1):length(allcl)) {
+      clinds2=which(clids==allcl[cl2])
+      samp2=round(length(clinds2)*0.5)
+      prediction_vals=c(1,1)
+      for (rf_iteration in 1:num_iterations) {
+        numcells=min(c(10,round(samp1/2),round(samp2/2)))
+        set.seed(10000*cl1+100*cl2+rf_iteration)
+        sampcells1=sample(clinds1,samp1)
+        sampcells2=sample(clinds2,samp2)
+        remcells1=setdiff(clinds1,sampcells1)
+        remcells2=setdiff(clinds2,sampcells2)
+        #rfmod1=randomForest(x=distweights[c(sampcells1,sampcells2),],y=as.factor(clids[c(sampcells1,sampcells2)]))
+        rfmod1 <- foreach(ntree=rep(2, 20), .combine=combine, .multicombine=TRUE, # number of tree here is 10 trees x number of cores. 
+              .packages='randomForest') %dopar% {
+                randomForest(x=distweights[c(sampcells1,sampcells2),], # Here is the trainning. It uses CPM values from 2 clusters
+                             y=as.factor(clids[c(sampcells1,sampcells2)]),
+                             ntree=ntree)
+              }
+        
+        rfout1=predict(rfmod1,distweights[c(remcells1,remcells2),]) # prediction using the other half
+        ###confusion matrix###
+        confmat=table(rfout1,clids[c(remcells1,remcells2)])
+        prediction_vals[1]=min(prediction_vals[1],confmat[1,1]/(confmat[1,1]+confmat[2,1])) # proportion of cells corrected classified by the RF
+        prediction_vals[2]=min(prediction_vals[2],confmat[2,2]/(confmat[1,2]+confmat[2,2]))
+      }
+      clmat[cl1,cl2]=prediction_vals[1]
+      clmat[cl2,cl1]=prediction_vals[2]
+    }
+  }
+  return(clmat)
+}
+
+##This function is similar to the one used in the first step but instead recreates seurat objects form subclusters of the initial clusterings. see step 4
+cluster_over_parameters=function(dat,batchval,keepcols,pcrange=5:20,resrange=seq(from=0.2,to=0.8,by=0.2),krange=c(5),batchreg=1) {
+  fullclusterings=list()
+  if (length(keepcols)>50) {
+    #datobj_0 <- new("seurat", raw.data = data.frame(alldat[,keepcols]))
+    datobj_0 <- CreateSeuratObject(counts = data.frame(alldat[,keepcols]))
+    datobj_0$batch <- batchval[keepcols]
+    datobj_0 = NormalizeData(datobj_0)
+    if (batchreg==1 & (length(unique(datobj_0@meta.data$orig.ident))>1)) {
+      datobj_0 = ScaleData(datobj_0,vars.to.regress=c("nCount_RNA","batch", "percent.mt"))
+    } else {
+      datobj_0 = ScaleData(datobj_0,vars.to.regress=c("nCount_RNA", "percent.mt"))
+    }
+    datobj_0 <- FindVariableFeatures(datobj_0, selection.method = "vst", nfeatures = 2000)
+    datobj_0 <- RunPCA(object = datobj_0, verbose = TRUE)
+    comboval="0"
+    maxcls=1
+    maxpcs=0
+    maxident=rep("0",length(keepcols))
+    for (num_pcs in pcrange) {
+    	
+      for (resval in resrange) {
+        for (k.param in krange) {
+          datobj_0 <- FindNeighbors(datobj_0, dims=1:num_pcs)
+          datobj_0 <- FindClusters(datobj_0, algorithm=1, verbose = F, resolution = resval)
+          clustids=datobj_0@active.ident
+          print(paste("running parameter combination ", "PCs:", num_pcs,"Resolution:",resval,"K parameter:", k.param,"Clusters:",length(unique(clustids)),sep=" "))
+          if (length(unique(clustids))>1) {
+            outnam=paste(clustids,collapse=",")
+            if (outnam %in% names(fullclusterings)) {
+              fullclusterings[[outnam]]=c(fullclusterings[[outnam]],paste(num_pcs,resval,k.param))
+            } else {
+              fullclusterings[[outnam]]=paste(num_pcs,resval,k.param)
+            }
+          }
+        }
+      }
+    }
+  }
+  return(fullclusterings)
+}
+
+
+cell_by_cell_prediction=function(dataset,clusterids,crossval=4,iterations=100,filename="rf_pred.rda") {
+  allf=unique(clusterids)
+  predlist=list()
+  for (ii in 1:(length(allf)-1)) {
+    testcols1=rownames(dataset)[which(clusterids==allf[ii])]
+    for (jj in (ii+1):length(allf)) {
+      testcols2=rownames(dataset)[which(clusterids==allf[jj])]
+      outmat1=matrix(0,nrow=100,ncol=length(testcols1))
+      colnames(outmat1)=testcols1
+      outmat2=matrix(0,nrow=100,ncol=length(testcols2))
+      colnames(outmat2)=testcols2
+      numtrain=min(round(length(testcols1)*3/4),round(length(testcols2)*3/4))
+      alldone1=c()
+      alldone2=c()
+      set.seed(ii*iterations+jj)
+      for (kk in 1:iterations) {
+        sampids1=sample((1:length(testcols1))%%crossval)
+        sampids2=sample((1:length(testcols2))%%crossval)
+        for (mm in unique(sampids1)) {
+          trainset=c(sample(testcols1[sampids1!=mm],min(numtrain,length(which(sampids1!=mm)))),sample(testcols2[sampids2!=mm],min(numtrain,length(which(sampids2!=mm)))))
+          testset=c(testcols1[sampids1==mm],testcols2[sampids2==mm])
+          ttt=as.factor(rep(c(allf[ii],allf[jj]),times=c(min(numtrain,length(which(sampids1!=mm))),min(numtrain,length(which(sampids2!=mm))))))
+          predval <- foreach(ntree=rep(10, 8), .combine=combine, .multicombine=TRUE,
+              .packages='randomForest') %dopar% {
+                randomForest(as.matrix(dataset[trainset,]),ttt)
+                }
+          ##predval=randomForest(as.matrix(dataset[trainset,]),ttt)
+          outpred=predict(predval,as.matrix(dataset[testset,]))
+          names(outpred)=testset
+          outmat1[kk,testcols1[sampids1==mm]]=as.character(outpred[testcols1[sampids1==mm]])
+          outmat2[kk,testcols2[sampids2==mm]]=as.character(outpred[testcols2[sampids2==mm]])
+        }
+        print(c(ii,jj,kk))
+      }
+      nam=paste0(allf[ii],"-",allf[jj])
+      predlist[[nam]]=list()
+      predlist[[nam]][[1]]=outmat1
+      predlist[[nam]][[2]]=outmat2
+      save(predlist,file=filename)
+    }
+  }
+}
+
+
+
+```
+
+# Step 2: Permutation
+Permutation of PC and resolution with ranges of values. Builds many clusterings to be compared for robustness.
+```{r permutation, message=FALSE, warning=FALSE}
+top_clustering_over_parameters = cluster_over_parameters_2(MG22HIPP,batchval,keepcols=1:ncol(MG22HIPP),pcrange=5:20,krange=c(5), resrange=seq(from=0.2,to=0.8,by=0.2)) #The parameter here subscribe the parameters in the function. 
+
+length(top_clustering_over_parameters) #number of combinations 
+top_clustering_over_parameters[1]
+names(top_clustering_over_parameters) #clusters for each cell 
+```
+
+# Step 3:Check Robustness with random forest
+
+For each combination of parameters, we check cluster robustness by training a randomForest model on half of the cells and predicting cluster membership on the reminnig half.
+- Random forest builds multiple decision trees and merges them together to get a more accurate and stable prediction. Randomness is added to the model because at each node split it selects from a random subset of features (rather than choosing the best of all features) thus producing a diversity of trees that are then merged to create a better model (and prevents overfitting).  
+- Cluster_robustness runs the randomForest and returns a matrix of minimum prediction values for each cluster over all pairs of clusters. Then we select the one with the highest number of clusters with minimum prediction score >=0.75
+
+```{r setup for cluster_robustness}
+alldat <- as.matrix(GetAssayData(object = MG22HIPP, slot = "counts"))
+
+alldat_cpm = sweep(alldat, 2,colSums(alldat),"/")*10^6
+t_alldat_cpm<- t(alldat_cpm)
+t_alldat_cpm[1:10,1:10]
+```
+
+
+```{r robustness}
+# https://github.com/vilasmenon/Microglia_Olah_et_al_2020/blob/master/code_for_submission.R 
+
+cluster_numbers=rep(0,length(top_clustering_over_parameters))
+predmatrices=list()
+
+# Test which configuration of Random forest return best results
+for (parval in 1:length(top_clustering_over_parameters)) {
+  print(parval)
+  clusterids=strsplit(names(top_clustering_over_parameters)[parval],",")[[1]]
+  prediction_matrix=cluster_robustness(distweights=t_alldat_cpm,clids=clusterids)
+  print(prediction_matrix)
+  minrows=apply(prediction_matrix,1,min) # smallest number in the line
+  mincols=apply(prediction_matrix,2,min) # smallest number in the column 
+  cluster_numbers[parval]=length(which(minrows>=0.75 & mincols>=0.75)) # row and column need to be >.75
+  predmatrices[[parval]]=prediction_matrix # prediction_matrix has the pairwise values 
+}
+# Select the best parameter configuration (ie the one with more robust clusters)
+optimal_pars=which(cluster_numbers==max(cluster_numbers))[1]
+
+# We tested 2 parameteres of resolution resrange=c(0.2,0.5). So, optimal_pars shows the index of the best configuration. If the result is 1, we should go for resrange = 0.2. 
+
+optimal_pars # Result is the number of parameters configuration. In this test, 1 means 
+
+cluster_numbers # Number (quantity) of clusters to be merged
+
+top_level_clusters=unlist(strsplit(names(top_clustering_over_parameters)[optimal_pars],",")) # original seurat clusters
+prediction_matrix=predmatrices[[optimal_pars]]
+minrows=apply(prediction_matrix,1,min)
+mincols=apply(prediction_matrix,2,min)
+distinct_clusters=rownames(prediction_matrix)[which(minrows>=0.75 & mincols>=0.75)]
+# minrows>=0.3 & mincols>=0.3 list cluster with robust results
+merge_cells = which(top_level_clusters %in% setdiff(rownames(prediction_matrix),distinct_clusters))
+top_level_clusters[merge_cells]="merged1"
+
+```
+
+
+```{r show top clusters}
+###show distribution of top level clusters
+table(top_level_clusters) # Seurat clusters after checking robustness 
+```
+
+# Step 4: For each top level cluster, re-run steps 2 and 3
+```{r subclusters}
+
+###Step 4: for each top level cluster, re-run steps 2 and 3
+subcluster_list=list()
+unique_top_level_clusters=unique(top_level_clusters)
+for (topcl in unique_top_level_clusters) {
+  keepcells=which(top_level_clusters==topcl)
+  sub_clustering_over_parameters = cluster_over_parameters(alldat,batchval,keepcols=keepcells,
+                                     pcrange=5:20,resrange=seq(from=0.2,to=0.8,by=0.2),krange=c(5),batchreg=1)
+  cluster_numbers=rep(0,length(sub_clustering_over_parameters))
+  predmatrices=list()
+  if(length(sub_clustering_over_parameters)>0){
+  for (parval in 1:length(sub_clustering_over_parameters)) {
+    clusterids=strsplit(names(sub_clustering_over_parameters)[parval],",")[[1]]
+    prediction_matrix=cluster_robustness(distweights=t(alldat_cpm[,keepcells]),clids=clusterids,num_iterations=20)
+    minrows=apply(prediction_matrix,1,min)
+    mincols=apply(prediction_matrix,2,min)
+    cluster_numbers[parval]=length(which(minrows>=0.75 & mincols>=0.75))
+    predmatrices[[parval]]=prediction_matrix
+  }  
+  }
+  if (max(cluster_numbers)>1) {
+    optimal_pars=which(cluster_numbers==max(cluster_numbers))[1]
+    sub_level_clusters=strsplit(names(sub_clustering_over_parameters)[optimal_pars],",")
+    prediction_matrix=predmatrices[[optimal_pars]]
+    minrows=apply(prediction_matrix,1,min)
+    mincols=apply(prediction_matrix,2,min)
+    distinct_clusters=rownames(prediction_matrix)[which(minrows>=0.75 & mincols>=0.75)]
+    merge_cells=which(sub_level_clusters %in% setdiff(rownames(prediction_matrix),distinct_clusters))
+    sub_level_clusters[merge_cells]="merged1"
+    subcluster_list[[as.character(topcl)]]=sub_level_clusters
+  } else {
+    subcluster_list[[as.character(topcl)]]="No_subdivisions"
+  }
+}
+
+```
+
+
+```{r id top clustering}
+###compile top level and sub-level cluster names###
+two_level_clusters=as.character(top_level_clusters)
+for (ii in names(subcluster_list)) {
+  if (subcluster_list[[ii]][1]!="No_subdivisions") {
+    renamecells=which(two_level_clusters==ii)
+    two_level_clusters[renamecells]=paste0(two_level_clusters[renamecells],"_",subcluster_list[[ii]])
+  }
+}
+table(two_level_clusters)
+
+
+## 1st classification: Any cluster with accuracy bellow 75% is merged
+## 2nd classification: Is there any sub-cluster with accuracy bellow 75%? If yes, the sub-clusters will be merged. If not, it will keep the sub-clusters. 
+ 
+results = data.frame(cell = colnames(alldat), cluster = two_level_clusters) #A table with cluster by cell. 
+write.table(results, file = "~/pd-omics/katia/scripts/Scripts_Emily/cluster_by_cell_MG_22_HIPP.txt", sep = "\t", quote = F, row.names = F)
+```
+
+# Prediction scores
+After clustering is finished, use random forest classification to generate prediction scores for each cell in each pair of clusters.This set of matrices is the basis for the constellation plot
+```{r cell_preditic}
+
+# The variable results has the cluster by each cell. With this result the code will run another random forest but now using 75% as training set (before was 50%)  in a cross-validation. 
+
+#clusterids = read.csv("~/pd-omics/katia/Microglia_Olah_et_al_2020/SupplementaryData15.csv",header=T,row.names=1)[,1] # this is to get Olah et al clusters. 
+clusterids = results$cluster 
+
+cell_predictions=cell_by_cell_prediction(dataset=t_alldat_cpm,clusterids=clusterids,crossval=4,iterations=10,
+                                          filename="rf_predictions_all_clusters_test.rda") #Save the cell predictions in a object
+
+getwd() #to see the folder where the file was saved
+```
+
+```{r optimal parameters}
+clusterings.top <- top_clustering_over_parameters[optimal_pars]
+clusterings.top
+PCs <- as.numeric(sapply(strsplit(as.character(clusterings.top[1]), " "), "[[", 2))
+Resol <- as.numeric(sapply(strsplit(as.character(clusterings.top[1]), " "), "[[", 4))
+```
+
+# Clustering
+
+```{r Clustering}
+MG22<- FindNeighbors(MG22, dims = 1:PCs)
+MG22 <- FindClusters(MG22 , resolution = Resol)
+MG22 <- RunUMAP(MG22, dims = 1:PCs)
+```
+
+```{r}
+#final_clusters_ <- read_tsv("cluster_by_cell.txt")
+final_clusters_ <- results
+final_clusters_$cell <- as.factor(final_clusters_$cell)
+final_clusters_$cluster <- as.factor(final_clusters_$cluster)
+#add final clusters to seurat object
+MG22[["RF_clusters"]] <- final_clusters_$cluster
+
+Idents(MG22) <- "RF_clusters"
+
+#save object
+saveRDS(MG22, "MG22_seurat_obj_with_RF_clusters")
+```
+
+
+#Differential expression
+
+```{r deg, eval=FALSE}
+
+require(edgeR)
+#define function
+one_versus_all_differential_expression=function(counts,clusterids) {
+  allf=unique(clusterids)
+  allf=allf[order(allf)]
+  allfits=list()
+  cpm=sweep(counts,2,colSums(counts),"/")*10^6
+  for (ii in 1:length(allf)) {
+    keepcols1=which(clusterids==ii)
+    keepcols2=which(clusterids!=ii)
+    subvec=factor(c(rep(1,length(keepcols1)),rep(2,length(keepcols2))))
+    e_design=model.matrix(~subvec)
+    y2 = DGEList(counts=counts[,c(keepcols1,keepcols2)])
+    y2 = estimateDisp(y2, e_design)
+    fit = glmQLFit(y2, e_design)
+    qlf.2vs1 <- glmQLFTest(fit, coef=2)
+    outval=topTags(qlf.2vs1,n=nrow(col),p.value=1)
+    mean1=apply(cpm[rownames(outval$table),keepcols1],1,mean)
+    mean2=apply(cpm[rownames(outval$table),keepcols2],1,mean)
+    frac1=rowSums(cpm[rownames(outval$table),keepcols1]>0)/length(keepcols1)
+    frac2=rowSums(cpm[rownames(outval$table),keepcols2]>0)/length(keepcols2)
+    outval$table=cbind(outval$table,mean1,mean2,frac1,frac2)
+    allfits[[paste0(allf[ii],"-all")]]=outval
+  }
+  return(allfits)
+}
+
+###Differential expression across clusters### 
+
+deg_one_versus_all=one_versus_all_differential_expression(alldat,clusterids)
+
+```
+
+
+

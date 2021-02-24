@@ -1,0 +1,41 @@
+---
+title: "Project onto Olah 2 with SC Transform"
+author: "Emily Kozik"
+date: "2/21/2021"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+    theme: lumen
+---
+
+# Setup
+```{r load libraries}
+library(Seurat)
+library(readr)
+library(ggplot2)
+library(patchwork)
+```
+
+
+
+## Loading the data
+```{r load data}
+#named pre- for prefiltering
+setwd("/Users/emilykozik/Raj_Lab/Microglia")
+mic <- readRDS("Microglia_merged.RDS")
+
+```
+
+
+## 
+```{r}
+mic.list <- SplitObject(mic, split.by = "new.ident")
+mic.list <- pancreas.list[c("MG22", "NUC", "Olah")]
+for (i in 1:length(pancreas.list)) {
+    pancreas.list[[i]] <- SCTransform(pancreas.list[[i]], verbose = FALSE)
+}
+```
+
+
