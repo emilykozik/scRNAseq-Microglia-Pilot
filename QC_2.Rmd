@@ -1,7 +1,7 @@
 ---
-title: "Project onto Olah 2 with SC Transform"
+title: "Quality Control"
 author: "Emily Kozik"
-date: "2/21/2021"
+date: "1/29/2021"
 output: 
   html_document:
     toc: TRUE
@@ -14,27 +14,174 @@ output:
 ```{r load libraries}
 library(Seurat)
 library(readr)
-library(ggplot2)
-library(patchwork)
 ```
-
-
-
-## Loading the data
+## Loading in all the data
 ```{r load data}
 #named pre- for prefiltering
 setwd("/Users/emilykozik/Raj_Lab/Microglia")
-mic <- readRDS("Microglia_merged.RDS")
+
+
+pre.Olah <- readRDS("Olah_Seurat.RDS")
+pre.Olah$new.ident <- "Olah_prefilter"
+Idents(object = pre.Olah) <- pre.Olah$new.ident
+
+pre.MG22 <- readRDS("MG22_combined.rds")
+pre.MG22$new.ident <- pre.MG22$orig.ident
+
+load("~/Raj_Lab/Microglia/seurat_object_17_016_MFG.Rdata")
+pre.NUC <- seurat_object_17_016_MFG
+pre.NUC$new.ident <- pre.NUC$orig.ident
+rm(seurat_object_17_016_MFG)
+```
+
+## Merge Prefiltered 
+
+```{r merge datasets}
+prefiltered.microglia <- merge(pre.MG22, y=c(pre.NUC,pre.Olah), add.cell.ids = c("pre.MG22", "pre.NUC", "pre.Olah"))
+```
+
+# Prefiltered Plots 
+```{r plotting prefilter}
+prefiltered.microglia[["percent.mt"]] <- PercentageFeatureSet(prefiltered.microglia, pattern = "^MT-")
+VlnPlot(prefiltered.microglia, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), group.by = "new.ident")
+
 
 ```
 
+There is a comparable range of transcript counts (nCount_RNA) for all samples. There are slightly more cells with high feature count in the nuclei sample (17_016-MFG). % Mito is not a straightforward metric to look at necessarily. It is quite low in the nuclei sample which is expected since there will be very few mitochonria in the samples. fresh microglia samples appear to have a higher percentage of mitochonrial gene expressed compared to Olah sample. This can indicated the sample contain many dead or dying cells but it is not clear.
 
-## 
+# Filtering
+
+## Olah et al. Filtering
+```{r filtering}
+#best to do this on chimera due to memory limits on local
+#Olah <- readRDS("Olah_Seurat.RDS")
+#suppdata <- GetAssayData(object = pre.Olah, slot = "counts")
+
+#suppdata2 = suppdata[grep("^LOC|^MT-|^RP[0-9]|^BC[0-9]|-PS",rownames(suppdata),invert=T),]
+#suppdata2 = suppdata2[,which(colSums(suppdata2)>=1000)]
+#suppmeta <- read_csv("Olah_SupplementaryData15.csv")
+#batchval = suppmeta[,2]
+#clusterval = suppmeta[,1]
+##need to do this on the chimera for high memory
+
+## Olah <- CreateSeuratObject(
+##  data.frame(suppdata2),
+##  project = "Olah",
+##  assay = "RNA",
+##  names.field = 1,
+##  names.delim = "",
+##  meta.data = data.frame(suppmeta)
+##)
+
+## saveRDS(Olah, "Olah_Seurat_filtered.RDS")
+##this is the filtered suerat object
+Olah <- readRDS("Olah_Seurat_filtered.RDS")
+```
+
+Check to make sure feature names work
+
 ```{r}
-mic.list <- pancreas.list[c("celseq", "celseq2", "fluidigmc1", "smartseq2")]
-for (i in 1:length(pancreas.list)) {
-    pancreas.list[[i]] <- SCTransform(pancreas.list[[i]], verbose = FALSE)
-}
+head(rownames(Olah))
+```
+
+## QC and filtering for MG22
+```{r}
+#add percent mitochondrial transcripts to metadata
+pre.MG22[["percent.mt"]] <- PercentageFeatureSet(pre.MG22, pattern = "^MT-")
+
+VlnPlot(pre.MG22, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+
+```{r}
+plot1 <- FeatureScatter(pre.MG22, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pre.MG22, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+plot3 <- FeatureScatter(pre.MG22, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1+ plot2
+plot3
+```
+
+Applying filters for low quality cells: Filter 1: Filter out cells with >10% mitochondrial genes. - There are many cells with even 20% + of mitochondrial genes. Based on this article 10% mito is a recommended cutoff point for human tissues. “We conclude that the new standardized threshold for human tissues should be 10%.” As opposed to the standard of 5%. https://academic.oup.com/bioinformatics/advance-article-abstract/doi/10.1093/bioinformatics/btaa751/5896986?redirectedFrom=fulltext - From the features scatter plots 10% appears to be a reasonable cutoff.
+
+Filter 2: Filter out doublets or cells with low number of transcripts -Olah 2020 eliminates cells with transcripts <1000 and >10000. These seem like reasonable filters in our case as well. We will try this here as well.
+
+
+```{r}
+MG22_filt <- subset(pre.MG22, subset = nCount_RNA > 1000 & nCount_RNA < 10000 & percent.mt < 10)
+saveRDS(MG22_filt, file = "MG22_combined_filtered.rds")
+```
+
+
+```{r}
+cell_count <- data.frame(Cells_Before_Filtering = pre.MG22@assays$RNA@counts@Dim[2],
+                     Cells_After_Filtering = MG22_filt@assays$RNA@counts@Dim[2])
+cell_count
+```
+
+
+```{r}
+cat("Total Genes:", nrow(MG22_filt))
+```
+
+##QC and filtering for NUC
+
+```{r}
+#add percent mitochondrial transcripts to metadata
+pre.NUC[["percent.mt"]] <- PercentageFeatureSet(pre.NUC, pattern = "^MT-")
+```
+
+
+```{r}
+VlnPlot(pre.NUC, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+```{r}
+plot1 <- FeatureScatter(pre.NUC, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pre.NUC, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+plot3 <- FeatureScatter(pre.NUC, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1+ plot2
+plot3
+plot1
+```
+
+Nuclei generally have low percentage of mitochondrial genes as expected. High amounts of mitochondrial DNA indicates that there may not have been complete isolation of nuclei from the cells. 5% MT looks like a decent cutoff for the nuclei. Most nuclei with high %MT have very low transcript and gene count.
+
+The nuclei have very high feature (gene) and transcript (count) numbers.. which is potentially concerning but may be because neuronal or other cells (non microglial) may just have high expression. It is really hard to determine doublets/triplets in this case. RNA spike-in or other controls may be useful in the future for QC. We can use the same thresholds as we did for fresh microglia.
+
+```{r}
+NUC_filt <- subset(pre.NUC, subset = nCount_RNA > 1000 & nCount_RNA < 10000 & percent.mt < 5)
+saveRDS(NUC_filt, file = "NUC_filtered.rds")
+```
+
+```{r}
+cell_count <- data.frame(Cells_Before_Filtering = pre.NUC@assays$RNA@counts@Dim[2],
+                     Cells_After_Filtering = NUC_filt@assays$RNA@counts@Dim[2])
+cell_count
+```
+
+```{r}
+cat("Total Genes:", nrow(NUC_filt))
+```
+
+# Compare datasets
+
+```{r}
+NUC <- NUC_filt
+MG22 <- MG22_filt
+
+Olah[["percent.mt"]] <- PercentageFeatureSet(Olah, pattern = "^MT-")
+
+Olah$new.ident <- "Olah"
+Idents(object = Olah) <- Olah$new.ident
+
+filtered.microglia <- merge(MG22, y=c(NUC, pre.Olah, Olah), add.cell.ids = c("MG22", "NUC", "Olah pre", "Olah"))
+
+VlnPlot(filtered.microglia, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), group.by = "new.ident")
+```
+
+```{r}
+saveRDS(filtered.microglia, "Microglia_merged.RDS")
 ```
 
 
